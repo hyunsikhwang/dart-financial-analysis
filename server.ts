@@ -315,6 +315,234 @@ async function startServer() {
     }
   });
 
+  app.get("/api/conditional-search", async (req, res) => {
+    const { year_month, quarters_count, apply_min, min_margin, apply_max, max_margin, apply_avg, avg_margin } = req.query;
+    if (!year_month || !quarters_count) {
+      return res.status(400).json({ error: "Missing parameters" });
+    }
+
+    const ym = parseInt(year_month as string);
+    const quartersCount = parseInt(quarters_count as string);
+    const applyMin = apply_min === "true";
+    const reqMinMargin = parseFloat(min_margin as string || "0");
+    const applyMax = apply_max === "true";
+    const reqMaxMargin = parseFloat(max_margin as string || "100");
+    const applyAvg = apply_avg === "true";
+    const reqAvgMargin = parseFloat(avg_margin as string || "0");
+
+    const targetYear = Math.floor(ym / 100);
+    const targetMonth = ym % 100;
+
+    let lastQ = 4;
+    if (targetMonth <= 3) lastQ = 1;
+    else if (targetMonth <= 6) lastQ = 2;
+    else if (targetMonth <= 9) lastQ = 3;
+
+    // Determine target quarters (newest to oldest)
+    const quartersToFetch: { year: number; quarter: number }[] = [];
+    let currYear = targetYear;
+    let currQ = lastQ;
+
+    for (let i = 0; i < quartersCount; i++) {
+      quartersToFetch.push({ year: currYear, quarter: currQ });
+      currQ--;
+      if (currQ === 0) {
+        currQ = 4;
+        currYear--;
+      }
+    }
+
+    const years = Array.from(new Set(quartersToFetch.map(q => q.year)));
+    if (years.length === 0) {
+      return res.json({ quarters: [], results: [] });
+    }
+
+    try {
+      // Query cached financials for these years from DuckDB
+      const rows = await dbAll(`
+        SELECT 
+          f.corp_code, 
+          c.corp_name,
+          c.stock_code,
+          f.year, 
+          f.quarter, 
+          f.account_id, 
+          f.thstrm_amount, 
+          f.source,
+          f.fs_div
+        FROM cached_financials f
+        JOIN corp_codes c ON f.corp_code = c.corp_code
+        WHERE f.year IN (${years.map(y => parseInt(y.toString())).join(',')})
+          AND f.account_id IN ('ifrs-full_Revenue', 'dart_OperatingIncomeLoss')
+      `);
+
+      // Group by company
+      const companiesData: Record<string, { 
+        corp_code: string; 
+        corp_name: string; 
+        stock_code: string;
+        quarters: Record<number, Record<number, { rev: number; op: number; source?: string; fs_div?: string }>> 
+      }> = {};
+
+      for (const row of rows) {
+        const { corp_code, corp_name, stock_code, year, quarter, account_id, thstrm_amount, source, fs_div } = row;
+        if (!companiesData[corp_code]) {
+          companiesData[corp_code] = {
+            corp_code,
+            corp_name,
+            stock_code,
+            quarters: {}
+          };
+        }
+        if (!companiesData[corp_code].quarters[year]) {
+          companiesData[corp_code].quarters[year] = {};
+        }
+
+        const existing = companiesData[corp_code].quarters[year][quarter];
+        
+        // Prefer CFS over OFS
+        if (existing && existing.fs_div === 'CFS' && fs_div === 'OFS') {
+          continue;
+        }
+
+        if (existing && existing.fs_div === 'OFS' && fs_div === 'CFS') {
+          companiesData[corp_code].quarters[year][quarter] = {
+            rev: 0,
+            op: 0,
+            source: source || "MotherDuck",
+            fs_div: 'CFS'
+          };
+        } else if (!existing) {
+          companiesData[corp_code].quarters[year][quarter] = {
+            rev: 0,
+            op: 0,
+            source: source || "MotherDuck",
+            fs_div: fs_div
+          };
+        }
+
+        if (account_id === 'ifrs-full_Revenue') {
+          companiesData[corp_code].quarters[year][quarter].rev = Number(thstrm_amount);
+        } else if (account_id === 'dart_OperatingIncomeLoss') {
+          companiesData[corp_code].quarters[year][quarter].op = Number(thstrm_amount);
+        }
+      }
+
+      // Calculate standalone values for each company and year/quarter
+      const companyStandaloneQuarters: Record<string, Record<string, { rev: number; op: number; margin: number }>> = {};
+
+      for (const [corp_code, cData] of Object.entries(companiesData)) {
+        companyStandaloneQuarters[corp_code] = {};
+        
+        for (const [yearStr, qValues] of Object.entries(cData.quarters)) {
+          const year = parseInt(yearStr);
+          
+          for (let q = 1; q <= 4; q++) {
+            if (!qValues[q]) continue;
+            
+            let standaloneRev = qValues[q].rev;
+            let standaloneOp = qValues[q].op;
+            const qSource = qValues[q].source || "MotherDuck";
+            
+            if (qSource === 'MotherDuck') {
+              if (q === 4) {
+                const q13RevSum = (qValues[1]?.rev || 0) + (qValues[2]?.rev || 0) + (qValues[3]?.rev || 0);
+                const q13OpSum = (qValues[1]?.op || 0) + (qValues[2]?.op || 0) + (qValues[3]?.op || 0);
+                standaloneRev = qValues[q].rev - q13RevSum;
+                standaloneOp = qValues[q].op - q13OpSum;
+              }
+            } else {
+              if (q > 1) {
+                let prevCumRev = 0;
+                let prevCumOp = 0;
+                for (let pq = q - 1; pq >= 1; pq--) {
+                  if (qValues[pq]) {
+                    prevCumRev = qValues[pq].rev;
+                    prevCumOp = qValues[pq].op;
+                    break;
+                  }
+                }
+                standaloneRev = qValues[q].rev - prevCumRev;
+                standaloneOp = qValues[q].op - prevCumOp;
+              }
+            }
+            
+            const margin = standaloneRev !== 0 ? (standaloneOp / standaloneRev) * 100 : 0;
+            companyStandaloneQuarters[corp_code][`${year}-${q}`] = {
+              rev: standaloneRev,
+              op: standaloneOp,
+              margin
+            };
+          }
+        }
+      }
+
+      // Filter matching companies based on min / avg criteria
+      const matchingCompanies: any[] = [];
+
+      for (const [corp_code, cData] of Object.entries(companiesData)) {
+        const marginsList: number[] = [];
+        let availableQuartersCount = 0;
+        
+        for (const target of quartersToFetch) {
+          const qKey = `${target.year}-${target.quarter}`;
+          const qData = companyStandaloneQuarters[corp_code][qKey];
+          if (qData) {
+            marginsList.push(qData.margin);
+            availableQuartersCount++;
+          } else {
+            // Put a placeholder margin or 0 if missing, but let's see if we enforce full consecutive count
+            marginsList.push(0);
+          }
+        }
+
+        // We require full data of quartersCount to avoid displaying incomplete records
+        if (availableQuartersCount < quartersCount) {
+          continue;
+        }
+
+        const minMargin = Math.min(...marginsList);
+        const maxMargin = Math.max(...marginsList);
+        const avgMargin = marginsList.reduce((sum, val) => sum + val, 0) / marginsList.length;
+        
+        let satisfies = true;
+        if (applyMin) {
+          if (minMargin < reqMinMargin) satisfies = false;
+        }
+        if (applyMax) {
+          if (maxMargin > reqMaxMargin) satisfies = false;
+        }
+        if (applyAvg) {
+          if (avgMargin < reqAvgMargin) satisfies = false;
+        }
+        
+        if (satisfies) {
+          matchingCompanies.push({
+            corp_code: cData.corp_code,
+            corp_name: cData.corp_name,
+            stock_code: cData.stock_code,
+            margins: marginsList, // newest to oldest
+            minMargin,
+            maxMargin,
+            avgMargin,
+            quartersCount: availableQuartersCount
+          });
+        }
+      }
+
+      // Sort by avgMargin descending
+      matchingCompanies.sort((a, b) => b.avgMargin - a.avgMargin);
+
+      res.json({
+        quarters: quartersToFetch.map(q => `${q.year} Q${q.quarter}`),
+        results: matchingCompanies
+      });
+    } catch (error) {
+      console.error("Conditional search error:", error);
+      res.status(500).json({ error: "Service Error" });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
