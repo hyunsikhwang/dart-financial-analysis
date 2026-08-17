@@ -4,7 +4,11 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, 
   ResponsiveContainer, LineChart, Line, ComposedChart, Cell
 } from 'recharts';
-import { Search, TrendingUp, Calendar, Building2, Loader2, AlertCircle, ArrowUpRight, BarChart3, List, ArrowUpDown, SlidersHorizontal, Filter } from 'lucide-react';
+import { 
+  Search, TrendingUp, Calendar, Building2, Loader2, AlertCircle, 
+  ArrowUpRight, BarChart3, List, ArrowUpDown, SlidersHorizontal, 
+  Filter, Database, RefreshCw, ChevronDown, ChevronUp, Layers, Info, CheckCircle2 
+} from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -29,10 +33,36 @@ interface Company {
   stock_code: string;
 }
 
+interface QuarterStat {
+  year: number;
+  quarter: number;
+  quarterLabel: string;
+  companyCount: number;
+  recordCount: number;
+}
+
+interface SourceStat {
+  source: string;
+  companyCount: number;
+  recordCount: number;
+}
+
+interface DbStatus {
+  totalCompanies: number;
+  savedCompanies: number;
+  missingCompanies: number;
+  coverageRate: number;
+  totalRecords: number;
+  quarterStats: QuarterStat[];
+  recentQuarter: QuarterStat | null;
+  previousQuarter: QuarterStat | null;
+  sourceStats: SourceStat[];
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'individual' | 'conditional'>('individual');
   const [searchTerm, setSearchTerm] = useState('');
-  const [baseDate, setBaseDate] = useState('202603');
+  const [baseDate, setBaseDate] = useState('202606');
   const [companies, setCompanies] = useState<Company[]>([]);
   const [selectedCorp, setSelectedCorp] = useState<Company | null>(null);
   const [loading, setLoading] = useState(false);
@@ -40,6 +70,27 @@ export default function App() {
   const [financials, setFinancials] = useState<FinancialData[]>([]);
   const [chartViewMode, setChartViewMode] = useState<'standalone' | 'cumulative'>('standalone');
   const [error, setError] = useState<string | null>(null);
+
+  // DB Status state
+  const [dbStatus, setDbStatus] = useState<DbStatus | null>(null);
+  const [dbStatusLoading, setDbStatusLoading] = useState(false);
+  const [showDbDetails, setShowDbDetails] = useState(false);
+
+  const fetchDbStatus = async () => {
+    setDbStatusLoading(true);
+    try {
+      const res = await axios.get('/api/db-status');
+      setDbStatus(res.data);
+    } catch (e) {
+      console.error('Failed to load DB status:', e);
+    } finally {
+      setDbStatusLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDbStatus();
+  }, []);
 
   const chartData = useMemo(() => {
     if (chartViewMode === 'standalone') {
@@ -178,6 +229,8 @@ export default function App() {
       // Process raw data into quarterly values
       const processed = processRawFinancials(rawData);
       setFinancials(processed);
+      // Refresh DB status to reflect any newly cached data
+      fetchDbStatus();
     } catch (err) {
       setError('데이터를 가져오는 중 오류가 발생했습니다.');
     } finally {
@@ -378,6 +431,241 @@ export default function App() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-8">
+        {/* DB 저장 현황 배너 / 카드 */}
+        <div id="db-status-overview" className="mb-6 bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden transition-all">
+          {/* 상단 요약 바 */}
+          <div className="p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 shrink-0">
+                <Database size={20} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="font-extrabold text-sm text-slate-900 tracking-tight">DB 데이터 저장 현황</h3>
+                  {dbStatus ? (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200/60">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                      저장률 {dbStatus.coverageRate}%
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-500">
+                      불러오는 중...
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  DuckDB / MotherDuck 클라우드에 캐싱된 상장사 재무 데이터 현황입니다.
+                </p>
+              </div>
+            </div>
+
+            {/* 주요 지표 뱃지 그룹 */}
+            <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 text-xs">
+              {/* 저장 기업수 */}
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200/70">
+                <span className="text-slate-500 font-medium">저장 기업</span>
+                <span className="font-extrabold text-slate-900">
+                  {dbStatus ? `${dbStatus.savedCompanies.toLocaleString()}개사` : '-'}
+                </span>
+                <span className="text-[10px] text-slate-400">/ {dbStatus ? `${dbStatus.totalCompanies.toLocaleString()}개` : '-'}</span>
+              </div>
+
+              {/* 미저장 기업수 */}
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50/60 border border-rose-200/50">
+                <span className="text-rose-600/80 font-medium">미저장 기업</span>
+                <span className="font-extrabold text-rose-700">
+                  {dbStatus ? `${dbStatus.missingCompanies.toLocaleString()}개사` : '-'}
+                </span>
+              </div>
+
+              {/* 최근 분기 저장수 */}
+              {dbStatus?.recentQuarter && (
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-50/70 border border-blue-200/60 text-blue-900">
+                  <span className="text-blue-700/80 font-medium">최근({dbStatus.recentQuarter.quarterLabel})</span>
+                  <span className="font-black text-blue-700">{dbStatus.recentQuarter.companyCount.toLocaleString()}개사</span>
+                </div>
+              )}
+
+              {/* 직전 분기 저장수 */}
+              {dbStatus?.previousQuarter && (
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200/70 text-slate-700">
+                  <span className="text-slate-500 font-medium">직전({dbStatus.previousQuarter.quarterLabel})</span>
+                  <span className="font-extrabold text-slate-800">{dbStatus.previousQuarter.companyCount.toLocaleString()}개사</span>
+                </div>
+              )}
+
+              {/* 펼치기/접기 및 새로고침 버튼 */}
+              <div className="flex items-center gap-1 ml-auto sm:ml-0">
+                <button
+                  id="btn-refresh-db-status"
+                  onClick={fetchDbStatus}
+                  disabled={dbStatusLoading}
+                  title="DB 현황 새로고침"
+                  className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw size={15} className={cn(dbStatusLoading && "animate-spin text-blue-600")} />
+                </button>
+
+                <button
+                  id="btn-toggle-db-details"
+                  onClick={() => setShowDbDetails(prev => !prev)}
+                  className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                >
+                  <span>{showDbDetails ? "접기" : "상세보기"}</span>
+                  {showDbDetails ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* 확장 상세 패널 */}
+          {showDbDetails && dbStatus && (
+            <div className="border-t border-slate-100 bg-slate-50/50 p-4 sm:p-5 animate-in fade-in slide-in-from-top-2 duration-200">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                {/* 전체 통계 요약 카드 */}
+                <div className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-2xs">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-bold text-slate-600">전체 기업 데이터 현황</span>
+                    <Building2 size={16} className="text-slate-400" />
+                  </div>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500">전체 등록 상장사:</span>
+                      <span className="font-bold text-slate-900">{dbStatus.totalCompanies.toLocaleString()}개사</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500">재무데이터 보유 기업:</span>
+                      <span className="font-bold text-emerald-600">{dbStatus.savedCompanies.toLocaleString()}개사</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500">자료 미등록 기업:</span>
+                      <span className="font-bold text-rose-600">{dbStatus.missingCompanies.toLocaleString()}개사</span>
+                    </div>
+                    <div className="flex justify-between items-center pt-1.5 border-t border-slate-100">
+                      <span className="text-slate-500">총 누적 재무 레코드:</span>
+                      <span className="font-bold text-blue-600">{dbStatus.totalRecords.toLocaleString()}건</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 데이터 출처 현황 카드 */}
+                <div className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-2xs">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-bold text-slate-600">데이터 소스별 비중</span>
+                    <Layers size={16} className="text-slate-400" />
+                  </div>
+                  <div className="space-y-2 text-xs">
+                    {dbStatus.sourceStats && dbStatus.sourceStats.length > 0 ? (
+                      dbStatus.sourceStats.map((src, idx) => (
+                        <div key={idx} className="flex justify-between items-center">
+                          <span className="text-slate-600 font-medium flex items-center gap-1.5">
+                            <span className={cn(
+                              "w-2 h-2 rounded-full",
+                              src.source.includes('MotherDuck') ? "bg-amber-500" : "bg-blue-500"
+                            )}></span>
+                            {src.source}
+                          </span>
+                          <span className="font-bold text-slate-800">
+                            {src.recordCount.toLocaleString()}건 ({src.companyCount.toLocaleString()}개사)
+                          </span>
+                        </div>
+                      ))
+                    ) : (
+                      <span className="text-slate-400">데이터 소스 정보가 없습니다.</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* 최근 분기 요약 카드 */}
+                <div className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-2xs">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-bold text-slate-600">최근 분기 저장률 비교</span>
+                    <Calendar size={16} className="text-slate-400" />
+                  </div>
+                  <div className="space-y-2.5 text-xs">
+                    {dbStatus.recentQuarter && (
+                      <div>
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-slate-600 font-semibold">{dbStatus.recentQuarter.quarterLabel} (최신)</span>
+                          <span className="font-bold text-blue-600">
+                            {dbStatus.recentQuarter.companyCount.toLocaleString()}개사 ({dbStatus.totalCompanies > 0 ? ((dbStatus.recentQuarter.companyCount / dbStatus.totalCompanies) * 100).toFixed(1) : 0}%)
+                          </span>
+                        </div>
+                        <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                          <div 
+                            className="bg-blue-500 h-1.5 rounded-full transition-all" 
+                            style={{ width: `${dbStatus.totalCompanies > 0 ? (dbStatus.recentQuarter.companyCount / dbStatus.totalCompanies) * 100 : 0}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {dbStatus.previousQuarter && (
+                      <div className="pt-1">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-slate-600 font-semibold">{dbStatus.previousQuarter.quarterLabel} (직전)</span>
+                          <span className="font-bold text-slate-700">
+                            {dbStatus.previousQuarter.companyCount.toLocaleString()}개사 ({dbStatus.totalCompanies > 0 ? ((dbStatus.previousQuarter.companyCount / dbStatus.totalCompanies) * 100).toFixed(1) : 0}%)
+                          </span>
+                        </div>
+                        <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                          <div 
+                            className="bg-slate-400 h-1.5 rounded-full transition-all" 
+                            style={{ width: `${dbStatus.totalCompanies > 0 ? (dbStatus.previousQuarter.companyCount / dbStatus.totalCompanies) * 100 : 0}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* 분기별 저장 현황 리스트 (가로 스크롤 / 그리드) */}
+              <div className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-2xs">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-xs font-bold text-slate-700">분기별 저장 기업 수 추이 (최근 분기순)</span>
+                  <span className="text-[11px] text-slate-400">집계 분기: {dbStatus.quarterStats.length}개</span>
+                </div>
+                
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
+                  {dbStatus.quarterStats.map((q, idx) => {
+                    const isRecent = idx === 0;
+                    const isPrev = idx === 1;
+                    const percentage = dbStatus.totalCompanies > 0 ? ((q.companyCount / dbStatus.totalCompanies) * 100).toFixed(1) : '0';
+                    return (
+                      <div 
+                        key={idx}
+                        className={cn(
+                          "p-2.5 rounded-xl border text-xs flex flex-col justify-between transition-all",
+                          isRecent 
+                            ? "bg-blue-50/60 border-blue-200 text-blue-900" 
+                            : isPrev
+                            ? "bg-slate-50 border-slate-200/90 text-slate-800"
+                            : "bg-white border-slate-100 text-slate-700 hover:border-slate-200"
+                        )}
+                      >
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="font-extrabold">{q.quarterLabel}</span>
+                          {isRecent && <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-blue-600 text-white">최신</span>}
+                          {isPrev && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-200 text-slate-700">직전</span>}
+                        </div>
+                        <div className="flex items-baseline justify-between">
+                          <span className="text-[11px] text-slate-400">저장기업</span>
+                          <span className="font-bold text-slate-900">{q.companyCount.toLocaleString()}개</span>
+                        </div>
+                        <div className="flex items-baseline justify-between text-[10px] text-slate-400 mt-0.5">
+                          <span>보유비율</span>
+                          <span className="font-semibold text-slate-600">{percentage}%</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Tabs Bar */}
         <div className="bg-white rounded-2xl border border-slate-200 p-1 flex mb-8 w-fit shadow-sm">
           <button 
@@ -941,12 +1229,12 @@ export default function App() {
 
                 {sortedAndFilteredResults.length > 0 ? (
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left">
+                    <table className="w-full text-left border-collapse">
                       <thead>
-                        <tr className="text-[10px] font-black text-slate-400 uppercase tracking-wider border-b border-slate-100 bg-slate-50/50">
+                        <tr className="text-[10px] font-black text-slate-400 uppercase tracking-wider border-b border-slate-100 bg-slate-50/50 whitespace-nowrap">
                           <th 
                             onClick={() => handleSort('corp_name')}
-                            className="py-3 px-4 text-left rounded-l-xl cursor-pointer hover:bg-slate-100/50 transition-colors select-none"
+                            className="py-3 px-4 text-left rounded-l-xl cursor-pointer hover:bg-slate-100/50 transition-colors select-none whitespace-nowrap min-w-[180px]"
                           >
                             <div className="flex items-center gap-1.5 justify-start">
                               <span>기업 정보</span>
@@ -955,7 +1243,7 @@ export default function App() {
                           </th>
                           <th 
                             onClick={() => handleSort('avgMargin')}
-                            className="py-3 px-4 text-right cursor-pointer hover:bg-slate-100/50 transition-colors select-none"
+                            className="py-3 px-4 text-right cursor-pointer hover:bg-slate-100/50 transition-colors select-none whitespace-nowrap"
                           >
                             <div className="flex items-center gap-1.5 justify-end">
                               <span>평균 영업이익률</span>
@@ -964,7 +1252,7 @@ export default function App() {
                           </th>
                           <th 
                             onClick={() => handleSort('minMargin')}
-                            className="py-3 px-4 text-right cursor-pointer hover:bg-slate-100/50 transition-colors select-none"
+                            className="py-3 px-4 text-right cursor-pointer hover:bg-slate-100/50 transition-colors select-none whitespace-nowrap"
                           >
                             <div className="flex items-center gap-1.5 justify-end">
                               <span>최소 영업이익률</span>
@@ -973,7 +1261,7 @@ export default function App() {
                           </th>
                           <th 
                             onClick={() => handleSort('maxMargin')}
-                            className="py-3 px-4 text-right cursor-pointer hover:bg-slate-100/50 transition-colors select-none"
+                            className="py-3 px-4 text-right cursor-pointer hover:bg-slate-100/50 transition-colors select-none whitespace-nowrap"
                           >
                             <div className="flex items-center gap-1.5 justify-end">
                               <span>최대 영업이익률</span>
@@ -984,7 +1272,7 @@ export default function App() {
                             <th 
                               key={idx} 
                               onClick={() => handleSort(`quarter_${idx}`)}
-                              className="py-3 px-4 text-right cursor-pointer hover:bg-slate-100/50 transition-colors select-none"
+                              className="py-3 px-4 text-right cursor-pointer hover:bg-slate-100/50 transition-colors select-none whitespace-nowrap"
                             >
                               <div className="flex items-center gap-1.5 justify-end">
                                 <span>{q}</span>
@@ -992,12 +1280,12 @@ export default function App() {
                               </div>
                             </th>
                           ))}
-                          <th className="py-3 px-4 text-right rounded-r-xl w-24 select-none">상세분석</th>
+                          <th className="py-3 px-4 text-right rounded-r-xl w-24 select-none whitespace-nowrap">상세분석</th>
                         </tr>
                         {showColumnFilters && (
                           <tr className="bg-slate-50/80 border-b border-slate-100 animate-in slide-in-from-top duration-200">
                             {/* 기업 정보 필터 */}
-                            <td className="py-2 px-3">
+                            <td className="py-2 px-3 min-w-[180px]">
                               <input
                                 type="text"
                                 placeholder="기업명/코드 필터"
@@ -1111,9 +1399,9 @@ export default function App() {
                                 });
                               }}
                             >
-                              <td className="py-4 px-4 font-bold text-slate-900 uppercase">
+                              <td className="py-4 px-4 font-bold text-slate-900 uppercase min-w-[180px] whitespace-nowrap">
                                 <div className="flex flex-col">
-                                  <span className="text-slate-900 font-bold text-sm group-hover:text-blue-600 transition-colors">
+                                  <span className="text-slate-900 font-bold text-sm group-hover:text-blue-600 transition-colors whitespace-nowrap">
                                     {row.corp_name}
                                   </span>
                                   <span className="text-[10px] text-slate-400 font-mono mt-0.5 font-normal">

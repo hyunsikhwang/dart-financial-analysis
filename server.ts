@@ -187,6 +187,74 @@ async function startServer() {
 
   loadCorpCodes();
 
+  // DB Status API
+  app.get("/api/db-status", async (req, res) => {
+    try {
+      // 1. Total listed companies
+      const totalCorpRows = await dbAll("SELECT COUNT(DISTINCT corp_code) as total FROM corp_codes");
+      const totalCompanies = Number(totalCorpRows[0]?.total || 0);
+
+      // 2. Companies with cached financial data
+      const savedCorpRows = await dbAll("SELECT COUNT(DISTINCT corp_code) as saved, COUNT(*) as total_records FROM cached_financials");
+      const savedCompanies = Number(savedCorpRows[0]?.saved || 0);
+      const totalRecords = Number(savedCorpRows[0]?.total_records || 0);
+      const missingCompanies = Math.max(0, totalCompanies - savedCompanies);
+      const coverageRate = totalCompanies > 0 ? Number(((savedCompanies / totalCompanies) * 100).toFixed(1)) : 0;
+
+      // 3. Quarter stats
+      const quarterRows = await dbAll(`
+        SELECT 
+          year, 
+          quarter, 
+          COUNT(DISTINCT corp_code) as company_count,
+          COUNT(*) as record_count
+        FROM cached_financials
+        GROUP BY year, quarter
+        ORDER BY year DESC, quarter DESC
+        LIMIT 12
+      `);
+
+      const quarterStats = quarterRows.map(row => ({
+        year: Number(row.year),
+        quarter: Number(row.quarter),
+        quarterLabel: `${row.year} Q${row.quarter}`,
+        companyCount: Number(row.company_count),
+        recordCount: Number(row.record_count)
+      }));
+
+      // 4. Source breakdown
+      const sourceRows = await dbAll(`
+        SELECT 
+          COALESCE(source, '기타') as source, 
+          COUNT(DISTINCT corp_code) as company_count,
+          COUNT(*) as record_count
+        FROM cached_financials
+        GROUP BY source
+      `);
+
+      const sourceStats = sourceRows.map(row => ({
+        source: row.source,
+        companyCount: Number(row.company_count),
+        recordCount: Number(row.record_count)
+      }));
+
+      res.json({
+        totalCompanies,
+        savedCompanies,
+        missingCompanies,
+        coverageRate,
+        totalRecords,
+        quarterStats,
+        recentQuarter: quarterStats[0] || null,
+        previousQuarter: quarterStats[1] || null,
+        sourceStats
+      });
+    } catch (error) {
+      console.error("DB Status error:", error);
+      res.status(500).json({ error: "Failed to fetch DB status" });
+    }
+  });
+
   app.get("/api/search-company", async (req, res) => {
     const { name } = req.query;
     if (!name) return res.json([]);
